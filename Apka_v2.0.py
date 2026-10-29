@@ -206,47 +206,56 @@ def setup_fonts():
 
 def generate_networking_schedule(participants, moderators, X, Y, Z):
     slots_needed = X * (Y - 1)
-    participants_padded = participants + [["Wolne", "Miejsce", "Brak"]] * (slots_needed - len(participants))
+    # Struktura uczestnika: [Imię, Nazwisko, Firma, Branża]
+    participants_padded = participants + [["Wolne", "Miejsce", "Brak", "Brak"]] * (slots_needed - len(participants))
 
     def calculate_cost(schedule):
         cost = 0
         meetings = defaultdict(int)
         mod_meetings = defaultdict(int)
         company_conflicts = 0
+        industry_conflicts = 0
         
         for round_idx, round_tables in enumerate(schedule):
             for table_idx, table_participants in enumerate(round_tables):
-                companies =[p[2] for p in table_participants if p[2] != "Brak"]
-                for i in range(len(companies)):
-                    for j in range(i+1, len(companies)):
-                        if companies[i] == companies[j]:
-                            company_conflicts += 1
-                            cost += 500
+                valid_participants = [p for p in table_participants if p[2] != "Brak"]
                 
-                for i in range(len(table_participants)):
-                    p1 = tuple(table_participants[i])
-                    if p1[2] == "Brak": continue
+                for i in range(len(valid_participants)):
+                    p1 = valid_participants[i]
+                    p1_tuple = tuple(p1)
                     
-                    mod_meetings[(p1, table_idx)] += 1
-                    if mod_meetings[(p1, table_idx)] > 1:
+                    # Kara za spotkanie u tego samego moderatora (przy tym samym stoliku)
+                    mod_meetings[(p1_tuple, table_idx)] += 1
+                    if mod_meetings[(p1_tuple, table_idx)] > 1:
                         cost += 50
                     
-                    for j in range(i+1, len(table_participants)):
-                        p2 = tuple(table_participants[j])
-                        if p2[2] == "Brak": continue
-                        pair = tuple(sorted([p1, p2]))
+                    for j in range(i + 1, len(valid_participants)):
+                        p2 = valid_participants[j]
+                        p2_tuple = tuple(p2)
+                        
+                        # 1. Konflikt firmowy (+500 pkt)
+                        if p1[2] == p2[2]:
+                            company_conflicts += 1
+                            cost += 500
+                        # 2. Konflikt branżowy (+200 pkt) - naliczany dla różnych firm z tej samej branży
+                        elif p1[3] != "Brak" and p1[3] == p2[3]:
+                            industry_conflicts += 1
+                            cost += 200
+                        
+                        # 3. Powtórzone spotkanie tej samej pary uczestników (+100 pkt)
+                        pair = tuple(sorted([p1_tuple, p2_tuple]))
                         meetings[pair] += 1
                         if meetings[pair] > 1:
                             cost += 100
                             
-        return cost, company_conflicts
+        return cost, company_conflicts, industry_conflicts
 
     def generate_initial_schedule():
-        schedule =[]
+        schedule = []
         for _ in range(Z):
             round_participants = participants_padded[:]
             random.shuffle(round_participants)
-            round_tables =[round_participants[i*(Y-1):(i+1)*(Y-1)] for i in range(X)]
+            round_tables = [round_participants[i*(Y-1):(i+1)*(Y-1)] for i in range(X)]
             schedule.append(round_tables)
         return schedule
 
@@ -262,7 +271,7 @@ def generate_networking_schedule(participants, moderators, X, Y, Z):
         return new_schedule
 
     current_schedule = generate_initial_schedule()
-    current_cost, _ = calculate_cost(current_schedule)
+    current_cost, _, _ = calculate_cost(current_schedule)
     best_schedule, best_cost = current_schedule, current_cost
 
     T = 1000.0
@@ -277,7 +286,7 @@ def generate_networking_schedule(participants, moderators, X, Y, Z):
 
     while T > min_T:
         neighbor = get_neighbor(current_schedule)
-        neighbor_cost, _ = calculate_cost(neighbor)
+        neighbor_cost, _, _ = calculate_cost(neighbor)
         
         if neighbor_cost < current_cost or random.random() < math.exp((current_cost - neighbor_cost) / T):
             current_schedule = neighbor
@@ -298,7 +307,7 @@ def generate_networking_schedule(participants, moderators, X, Y, Z):
     progress_bar.empty()
     status_text.empty()
 
-    final_cost, company_conflicts = calculate_cost(best_schedule)
+    final_cost, company_conflicts, industry_conflicts = calculate_cost(best_schedule)
     
     unique_meetings_per_participant = defaultdict(set)
     for round_idx, round_tables in enumerate(best_schedule):
@@ -315,7 +324,7 @@ def generate_networking_schedule(participants, moderators, X, Y, Z):
     expected_meetings = len(participants) * (Z * (Y - 2) + Z)
     unique_percentage = (total_unique / expected_meetings) * 100 if expected_meetings > 0 else 0
 
-    return best_schedule, company_conflicts, unique_percentage
+    return best_schedule, company_conflicts, industry_conflicts, unique_percentage
 
 def visualize_schedule_plotly(schedule, moderators, participants_data, X, Y, Z):
     participant_ids = {}
@@ -327,7 +336,7 @@ def visualize_schedule_plotly(schedule, moderators, participants_data, X, Y, Z):
     palette = plotly.colors.qualitative.Pastel + plotly.colors.qualitative.Set3
     company_colors = {comp: palette[i % len(palette)] for i, comp in enumerate(companies)}
 
-    figs =[]
+    figs = []
     cols = math.ceil(math.sqrt(X))
     rows = math.ceil(X / cols)
     
@@ -479,7 +488,7 @@ def generate_visual_plan_pdf_buffer(schedule, moderators, participants_data, X, 
             c.setFont(font_bold, 12)
             c.drawCentredString(cx, cy - 4, f"STÓŁ {t+1}")
             
-            participants =[p for p in schedule[r][t] if p[2] != "Brak"]
+            participants = [p for p in schedule[r][t] if p[2] != "Brak"]
             K = len(participants)
             M = 1 + K
             
@@ -613,6 +622,7 @@ def generate_visual_plan_pdf_buffer(schedule, moderators, participants_data, X, 
     c.save()
     buffer.seek(0)
     return buffer
+
 def generate_badges_pdf_buffer(schedule, participants_data, Z):
     fonts_ready = setup_fonts()
     font_regular = "CustomFont" if fonts_ready else "Helvetica"
@@ -715,7 +725,7 @@ def generate_badges_pdf_buffer(schedule, participants_data, Z):
     return buffer
 
 def generate_export_dataframe(schedule, moderators_data):
-    export_data =[]
+    export_data = []
     for r_idx, round_tables in enumerate(schedule):
         for t_idx, table_participants in enumerate(round_tables):
             mod = moderators_data[t_idx]
@@ -753,40 +763,41 @@ def show_app_info():
 
 Ten generator pomoże Ci optymalnie rozplanować usadzenie uczestników podczas wydarzenia networkingowego.
 
-W lewym panelu bocznym załaduj plik excel z dwiema zakładkami:
+W sekcji danych wejściowych załaduj plik Excel z dwiema zakładkami:
 
-1. Zakładka „Lista Uczestników” w układzie kolumn: Imię, Nazwisko, Firma
-2. Zakładka „Moderatorzy” w układzie kolumn: Imię, Nazwisko - PODANA W PLIKU LICZBA MODERATORÓW BĘDZIE RÓWNOZNACZNA Z ILOŚCIĄ STOLIKÓW
+1. Zakładka **„Uczestnicy”** w układzie kolumn: `Imię`, `Nazwisko`, `Firma`, `Branża`
+2. Zakładka **„Moderatorzy”** w układzie kolumn: `Imię`, `Nazwisko` - PODANA W PLIKU LICZBA MODERATORÓW BĘDZIE RÓWNOZNACZNA Z ILOŚCIĄ STOLIKÓW
 
 **Liczba Moderatorów jest równoznaczna z ilością stolików.**
 
 Następnie podaj liczbę miejsc przy stoliku oraz planowaną liczbę rund.
 
-Liczbę miejsc przy stoliku należy rozumieć jako całkowitą liczbę miejsc (w tym miejsce dla Moderatora)
+Liczbę miejsc przy stoliku należy rozumieć jako całkowitą liczbę miejsc (w tym miejsce dla Moderatora).
 
 Aplikacja podpowie Ci optymalną liczbę rund na podstawie ilości uczestników oraz ilości dostępnych miejsc przy stoliku.
 
 Rozplanowując usadzenie uczestników generator kieruje się następującymi priorytetami:
 
-- zmaksymalizować ilość poznanych osób dla każdego uczestnika (unikalne spotkania)
-- ograniczyć do minimum ilość powtórzonych spotkań tych samych uczestników
-- unikać sytuacji usadzenia osób z tej samej firmy przy jednym stoliku
+- unikać sytuacji usadzenia osób z tej samej firmy przy jednym stoliku (najwyższy priorytet)
+- unikać sytuacji usadzenia osób z tej samej branży przy jednym stoliku
+- zmaksymalizować ilość poznanych osób dla każdego uczestnika (unikalne spotkania) i ograniczyć powtórzone spotkania
 
 W sytuacji gdy liczba uczestników z pliku przekroczy dostępną liczbę miejsc przy stolikach N, Generator rozplanuje usadzenie pierwszych N osób z listy oraz dodatkowo wyświetli listę osób, które nie zostały uwzględnione w wydarzeniu.
 
-Po podaniu wszystkich parametrów kliknij czerwony przycisk “Generuj plan usadzenia”
+Po podaniu wszystkich parametrów kliknij przycisk **„Generuj Plan Usadzenia”**.
 
 Aplikacja wygeneruje plan usadzenia uczestników dla wszystkich rund, poda statystyki:
 
-- Liczba stolików - podsumowanie ilości stolików w wydarzeniu (równe liczbie moderatorów)
-- Konflikty firmowe - ilość sytuacji w których osoby z tej samej firmy spotykają się przy jednym stoliku
-- Procent unikalnych spotkań - udział spotkań z nowymi osobami pośród wszystkich spotkań.
+- **Liczba stolików** - podsumowanie ilości stolików w wydarzeniu (równe liczbie moderatorów)
+- **Konflikty firmowe** - ilość sytuacji, w których osoby z tej samej firmy spotykają się przy jednym stoliku
+- **Konflikty branżowe** - ilość sytuacji, w których osoby z różnych firm, ale z tej samej branży spotykają się przy jednym stoliku
+- **Procent unikalnych spotkań** - udział spotkań z nowymi osobami pośród wszystkich spotkań
 
 Dla wygenerowanego harmonogramu, na samym dole strony możesz pobrać:
 
-- Harmonogram wydarzenia (excel)
-- Plakietki dla każdego uczestnika wskazujące indywidualny harmonogram (pdf)
-- Plany graficzne usadzenia uczestników przy stołach dla każdej rundy (pdf)
+- Harmonogram wydarzenia (Excel)
+- Plakietki dla każdego uczestnika wskazujące indywidualny harmonogram (PDF)
+- Plany graficzne usadzenia uczestników przy stołach dla każdej rundy (PDF)
 
 ## Bezpieczeństwo danych
 
@@ -819,7 +830,7 @@ with st.container(border=True):
     st.info("""
     **Wymagany format pliku Excel:**
     Plik musi zawierać dwa arkusze:
-    1. **Uczestnicy**: Kolumny `Imię`, `Nazwisko`, `Firma`
+    1. **Uczestnicy**: Kolumny `Imię`, `Nazwisko`, `Firma`, `Branża`
     2. **Moderatorzy**: Kolumny `Imię`, `Nazwisko` - PODANA W PLIKU LICZBA MODERATORÓW BĘDZIE RÓWNOZNACZNA Z ILOŚCIĄ STOLIKÓW
     """)
     
@@ -830,11 +841,25 @@ if uploaded_file is not None:
     try:
         df_participants = pd.read_excel(uploaded_file, sheet_name='Uczestnicy')
         df_moderators = pd.read_excel(uploaded_file, sheet_name='Moderatorzy')
+        
+        required_cols = {'Imię', 'Nazwisko', 'Firma', 'Branża'}
+        if not required_cols.issubset(df_participants.columns):
+            missing = required_cols - set(df_participants.columns)
+            st.error(f"Błąd: W arkuszu 'Uczestnicy' brakuje wymaganych kolumn: {', '.join(missing)}")
+            st.stop()
             
         df_participants = df_participants.dropna(subset=['Imię', 'Nazwisko', 'Firma'])
         df_moderators = df_moderators.dropna(subset=['Imię'])
         
-        participants = [[str(row['Imię']).strip(), str(row['Nazwisko']).strip(), str(row['Firma']).strip()] for _, row in df_participants.iterrows()]
+        participants = [
+            [
+                str(row['Imię']).strip(),
+                str(row['Nazwisko']).strip(),
+                str(row['Firma']).strip(),
+                str(row['Branża']).strip() if pd.notna(row['Branża']) and str(row['Branża']).strip() != "" else "Brak"
+            ]
+            for _, row in df_participants.iterrows()
+        ]
         moderators = [[str(row['Imię']).strip(), str(row['Nazwisko']).strip() if pd.notna(row['Nazwisko']) else ""] for _, row in df_moderators.iterrows()]
         
         X = len(moderators)
@@ -890,7 +915,7 @@ if uploaded_file is not None:
         st.error(f"**UWAGA: Przekroczono limit miejsc przy stolikach!**\n\nSystem rozmieści tylko pierwszych {M} uczestników z listy. Aby uwzględnić wszystkich, musisz ograniczyć listę uczestników do {M} osób lub zwiększyć liczbę stołów (moderatorów) do co najmniej {required_tables} lub zwiększyć ilość miejsc przy stołach.")
         
         with st.expander(f"Uczestnicy nieuwzględnieni (Liczba: {L - M})"):
-            excluded_df = pd.DataFrame(participants[M:], columns=["Imię", "Nazwisko", "Firma"])
+            excluded_df = pd.DataFrame([p[:3] for p in participants[M:]], columns=["Imię", "Nazwisko", "Firma"])
             # Zmiana indeksowania, aby zaczynało się od 1 zamiast od 0
             excluded_df.index = excluded_df.index + 1
             st.dataframe(excluded_df, use_container_width=True)
@@ -900,10 +925,11 @@ if uploaded_file is not None:
     # --- PRZYCISK AKCJI I ZAPIS DO SESSION STATE ---
     if st.button("🚀 Generuj Plan Usadzenia", type="primary", use_container_width=True):
         with st.spinner("Trwa optymalizacja harmonogramu..."):
-            schedule, conflicts, unique_pct = generate_networking_schedule(participants, moderators, X, Y, Z)
+            schedule, company_conflicts, industry_conflicts, unique_pct = generate_networking_schedule(participants, moderators, X, Y, Z)
             
             st.session_state['schedule'] = schedule
-            st.session_state['conflicts'] = conflicts
+            st.session_state['conflicts'] = company_conflicts
+            st.session_state['industry_conflicts'] = industry_conflicts
             st.session_state['unique_pct'] = unique_pct
             st.session_state['plan_ready'] = True
 
@@ -912,15 +938,17 @@ if uploaded_file is not None:
         
         schedule = st.session_state['schedule']
         conflicts = st.session_state['conflicts']
+        industry_conflicts = st.session_state.get('industry_conflicts', 0)
         unique_pct = st.session_state['unique_pct']
         
         st.success("✅ Harmonogram wygenerowany pomyślnie!")
         
         # --- METRYKI ---
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         col1.metric("Liczba Stolików", X)
         col2.metric("Konflikty firmowe", conflicts, delta_color="inverse")
-        col3.metric("Procent unikalnych spotkań", f"{unique_pct:.2f}%")
+        col3.metric("Konflikty branżowe", industry_conflicts, delta_color="inverse")
+        col4.metric("Procent unikalnych spotkań", f"{unique_pct:.2f}%")
 
         # --- WIZUALIZACJA I TABELE ---
         st.header("📊 Wizualizacja i Listy")
@@ -948,7 +976,7 @@ if uploaded_file is not None:
                             t_idx = i + j
                             with cols[j]:
                                 mod = moderators[t_idx]
-                                table_data =[{"ID": "M", "Imię i Nazwisko": f"{mod[0]} {mod[1]}", "Firma": "Moderator"}]
+                                table_data = [{"ID": "M", "Imię i Nazwisko": f"{mod[0]} {mod[1]}", "Firma": "Moderator"}]
                                 
                                 for p in schedule[r][t_idx]:
                                     if p[2] != "Brak":
